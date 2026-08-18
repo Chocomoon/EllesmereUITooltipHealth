@@ -1,8 +1,8 @@
 ## Interface: 120000, 120001, 120005, 120007, 120100
 ## Title: |cff0cd29fEllesmereUI|r Tooltip Health
 ## Notes: Adds a current/max health line to the unit tooltip. Standalone; independent of the EllesmereUI addon suite.
-## Author: Ellesmere
-## Version: 1.1.0
+## Author: Choco
+## Version: 1.0.0
 ## SavedVariables: EllesmereUITooltipHealthDB
 
 EllesmereUITooltipHealth.lua

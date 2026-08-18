@@ -1,5 +1,5 @@
 local ADDON = "EllesmereUITooltipHealth"
-local VERSION = "1.1.0"
+local VERSION = "1.0.0"
 
 local state = setmetatable({}, { __mode = "k" })
 local issecret = _G.issecretvalue
