@@ -1,4 +1,5 @@
 local ADDON = "EllesmereUITooltipHealth"
+local VERSION = "1.1.0"
 
 local state = setmetatable({}, { __mode = "k" })
 local issecret = _G.issecretvalue
@@ -27,7 +28,7 @@ local function EnsureDefaults()
     if db.showLabel == nil then db.showLabel = false end
     if db.showPercent == nil then db.showPercent = false end
     if db.liveUpdate == nil then db.liveUpdate = true end
-    if db.colorByPct == nil then db.colorByPct = true end
+    if db.barPosition == nil then db.barPosition = "top" end
     if db.debug == nil then db.debug = false end
 end
 EnsureDefaults()
@@ -35,6 +36,10 @@ EnsureDefaults()
 local function Log(msg)
     if not db.debug then return end
     DEFAULT_CHAT_FRAME:AddMessage("|cff0cd29f[EUI TH]|r " .. tostring(msg))
+end
+
+local function Print(msg)
+    DEFAULT_CHAT_FRAME:AddMessage("|cff0cd29f[EUI Tooltip Health]|r " .. tostring(msg))
 end
 
 local LABEL = "Health:"
@@ -76,8 +81,13 @@ local function fmt(n)
     return s:reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
 end
 
-local function ApplyFont(tt, left, right)
-    if not (EllesmereUI and EllesmereUI.GetFontPath) then return end
+local bar
+local barText
+local installStatus = "pending"
+local installErr
+
+local function ApplyBarFont(ft)
+    if not ft or not (EllesmereUI and EllesmereUI.GetFontPath) then return end
     local ok, fp = pcall(EllesmereUI.GetFontPath, "blizzardSkin")
     if not ok or type(fp) ~= "string" then return end
     local scale = (EllesmereUIDB and EllesmereUIDB.tooltipFontScale) or 1
@@ -87,30 +97,79 @@ local function ApplyFont(tt, left, right)
         local ok2, o = pcall(EllesmereUI.GetFontOutlineFlag, "blizzardSkin")
         if ok2 and type(o) == "string" then ol = o end
     end
-    pcall(left.SetFont, left, fp, size, ol)
-    if right then pcall(right.SetFont, right, fp, size, ol) end
+    pcall(ft.SetFont, ft, fp, size, ol)
 end
 
-local function ColorForPct(pct)
-    if not db.colorByPct then return 1, 1, 1 end
-    if pct > 60 then
-        return 0.2, 1, 0.2
-    elseif pct > 30 then
-        return 1, 0.82, 0.2
+local function BarColor(unit)
+    if not unit or not UnitExists(unit) then return 0.6, 0.6, 0.6 end
+    local okp, isPlayer = pcall(UnitIsPlayer, unit)
+    if not okp or isSecret(isPlayer) or isPlayer then
+        local okc, _, classFile = pcall(UnitClass, unit)
+        if okc and classFile and not isSecret(classFile) then
+            if C_ClassColor and C_ClassColor.GetClassColor then
+                local okcol, col = pcall(C_ClassColor.GetClassColor, classFile)
+                if okcol and col then return col.r, col.g, col.b end
+            end
+            local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[classFile]
+            if c then return c.r, c.g, c.b end
+        end
+        return 0.9, 0.9, 0.9
     end
-    return 1, 0.2, 0.2
+    local okr, react = pcall(UnitReaction, unit, "player")
+    if okr and type(react) == "number" and not isSecret(react) then
+        if react <= 3 then
+            return 0.9, 0.05, 0.05
+        elseif react == 4 then
+            return 0.9, 0.9, 0
+        end
+        return 0.1, 0.85, 0.1
+    end
+    return 0.6, 0.6, 0.6
 end
 
-local function RenderLine(ft, hpStr, maxStr, pctStr)
-    if not ft then return end
-    if db.showPercent then
-        ft:SetFormattedText("%s / %s (%s%%)", hpStr, maxStr, pctStr or "??")
+local function ApplyBarAnchor()
+    if not bar then return end
+    bar:ClearAllPoints()
+    if db.barPosition == "bottom" then
+        bar:SetPoint("TOPLEFT", GameTooltip, "BOTTOMLEFT", 0, 0)
+        bar:SetPoint("TOPRIGHT", GameTooltip, "BOTTOMRIGHT", 0, 0)
     else
-        ft:SetFormattedText("%s / %s", hpStr, maxStr)
+        bar:SetPoint("BOTTOMLEFT", GameTooltip, "TOPLEFT", 0, 0)
+        bar:SetPoint("BOTTOMRIGHT", GameTooltip, "TOPRIGHT", 0, 0)
     end
+end
+
+local function CreateBar()
+    if not GameTooltip then return end
+    bar = CreateFrame("StatusBar", nil, GameTooltip, "BackdropTemplate")
+    bar:SetHeight(12)
+    bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
+    bar:SetStatusBarColor(0.6, 0.6, 0.6)
+    bar:SetMinMaxValues(0, 1)
+    bar:SetValue(0)
+    bar:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+        insets = { left = 0, right = 0, top = 0, bottom = 0 },
+    })
+    bar:SetBackdropColor(0, 0, 0, 0.6)
+    bar:SetBackdropBorderColor(0, 0, 0, 0.8)
+    barText = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    barText:SetPoint("CENTER", bar, "CENTER", 0, 0)
+    barText:SetJustifyH("CENTER")
+    barText:SetTextColor(1, 1, 1, 1)
+    ApplyBarFont(barText)
+    bar:Hide()
+    ApplyBarAnchor()
+    Log("bar created (" .. (db.barPosition == "bottom" and "bottom" or "top") .. ")")
 end
 
 local function AddOrUpdate(tt, guid, token)
+    if not db.enabled then
+        if bar then bar:Hide() end
+        return "disabled"
+    end
     if not token then
         Log("AddOrUpdate: no token")
         return "no-token"
@@ -119,12 +178,16 @@ local function AddOrUpdate(tt, guid, token)
         Log("AddOrUpdate: unit not exists: " .. tostring(token))
         return "no-unit"
     end
+    if not bar then
+        Log("AddOrUpdate: bar not created")
+        return "no-bar"
+    end
     local hp, max = UnitHealth(token), UnitHealthMax(token)
     local hpSec, maxSec = isSecret(hp), isSecret(max)
 
     local pctNum, pctStr
     if hpSec or maxSec then
-        Log("AddOrUpdate: hp/max secret -> SetText render path")
+        Log("AddOrUpdate: hp/max secret -> bar render path")
         if _G.UnitHealthPercent then
             local okp, p = pcall(UnitHealthPercent, token, true)
             if okp and p ~= nil then
@@ -152,46 +215,43 @@ local function AddOrUpdate(tt, guid, token)
     end
 
     local hpStr, maxStr = fmt(hp), fmt(max)
-    local label = db.showLabel and LABEL or nil
-    local r, g, b
-    if pctNum then
-        r, g, b = ColorForPct(pctNum)
-    else
-        r, g, b = 1, 1, 1
+
+    pcall(bar.SetMinMaxValues, bar, 0, max)
+    pcall(bar.SetValue, bar, hp)
+
+    local r, g, b = BarColor(token)
+    pcall(bar.SetStatusBarColor, bar, r, g, b)
+
+    if not barText then
+        Log("AddOrUpdate: barText nil")
+        return "no-barText"
     end
 
-    local row = state[tt]
-    if row and row.lastLabel ~= (label or false) then
-        if row.left then pcall(row.left.SetText, row.left, "") end
-        if row.right then pcall(row.right.SetText, row.right, "") end
-        row = nil
+    local okf, ferr = pcall(function()
+        if db.showPercent then
+            if db.showLabel then
+                barText:SetFormattedText("%s %s / %s (%s%%)", LABEL, hpStr, maxStr, pctStr or "??")
+            else
+                barText:SetFormattedText("%s / %s (%s%%)", hpStr, maxStr, pctStr or "??")
+            end
+        else
+            if db.showLabel then
+                barText:SetFormattedText("%s %s / %s", LABEL, hpStr, maxStr)
+            else
+                barText:SetFormattedText("%s / %s", hpStr, maxStr)
+            end
+        end
+        bar:Show()
+    end)
+    if not okf then
+        Log("AddOrUpdate: bar render error: " .. tostring(ferr))
+        pcall(bar.Show, bar)
     end
-
-    local target = (label and row and row.right) or (not label and row and row.left)
-    if target then
-        RenderLine(target, hpStr, maxStr, pctStr)
-        target:SetTextColor(r, g, b)
-        row.guid, row.token = guid, token
-        return "updated"
+    if GameTooltipStatusBar and GameTooltipStatusBar:IsShown() then
+        GameTooltipStatusBar:Hide()
     end
-
-    if label then
-        tt:AddDoubleLine(label, " ", 1, 1, 1, 1, 1, 1)
-    else
-        tt:AddLine(" ")
-    end
-
-    local n2 = tt.NumLines and tt:NumLines() or 0
-    local newLeft = _G["GameTooltipTextLeft" .. n2]
-    local newRight = _G["GameTooltipTextRight" .. n2]
-    local addTarget = (label and newRight) or newLeft
-    if addTarget then
-        RenderLine(addTarget, hpStr, maxStr, pctStr)
-        addTarget:SetTextColor(r, g, b)
-    end
-    ApplyFont(tt, newLeft, newRight)
-    state[tt] = { guid = guid, token = token, lastLabel = label or false, left = newLeft, right = newRight }
-    return "added"
+    state[tt] = { guid = guid, token = token }
+    return "ok"
 end
 
 local function GroupTokenForGUID(guid)
@@ -294,20 +354,40 @@ local function Handler(tt, data, source)
 end
 
 local function Install()
-    local ok, err = pcall(function()
-        if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall
-            and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Unit then
+    installStatus = "pending"
+    if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall
+        and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Unit then
+        local ok, err = pcall(function()
             TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, function(tt, data)
                 Handler(tt, data, "postcall")
             end)
+        end)
+        if ok then
+            installStatus = "postcall-ok"
             Log("installed TooltipDataProcessor post-call")
         else
-            Log("TooltipDataProcessor unavailable")
+            installStatus = "postcall-err"
+            Log("postcall register ERROR: " .. tostring(err))
+        end
+    else
+        installStatus = "postcall-unavailable"
+        Log("TooltipDataProcessor unavailable")
+    end
+
+    local bok, berr = pcall(function()
+        CreateBar()
+        if GameTooltipStatusBar then
+            GameTooltipStatusBar:Hide()
         end
     end)
-    if not ok then
-        Log("Install ERROR: " .. tostring(err))
+    if not bok then
+        installStatus = "bar-err"
+        installErr = tostring(berr)
+        Log("CreateBar ERROR: " .. installErr)
+    elseif installStatus == "postcall-ok" then
+        installStatus = "ok"
     end
+    Log("Install status: " .. installStatus)
 end
 
 local ev = CreateFrame("Frame")
@@ -331,9 +411,24 @@ end)
 if GameTooltip and GameTooltip.HookScript then
     GameTooltip:HookScript("OnHide", function(self)
         state[self] = nil
+        if bar then bar:Hide() end
+        if GameTooltipStatusBar then GameTooltipStatusBar:Hide() end
     end)
     GameTooltip:HookScript("OnTooltipCleared", function(self)
         state[self] = nil
+        if bar then bar:Hide() end
+        if GameTooltipStatusBar then GameTooltipStatusBar:Hide() end
+    end)
+end
+
+if GameTooltip and GameTooltip.SetUnit and _G.hooksecurefunc then
+    _G.hooksecurefunc(GameTooltip, "SetUnit", function(tt, unit)
+        if not db.enabled or not db.liveUpdate then return end
+        if not unit or isSecret(unit) or not UnitExists(unit) then return end
+        local guid = UnitGUID(unit)
+        if guid and isSecret(guid) then guid = nil end
+        Log("hook SetUnit: " .. tostring(unit))
+        pcall(AddOrUpdate, tt, guid, unit)
     end)
 end
 
@@ -350,22 +445,24 @@ f:SetScript("OnEvent", function(self, event, addon)
     end
     if event == "PLAYER_LOGIN" then
         Install()
+        local extra = ""
+        if installStatus ~= "ok" and installErr then
+            extra = " | err: " .. installErr
+        end
+        Print("v" .. VERSION .. " 已加载 | Install: " .. installStatus ..
+            " | 血条: " .. (bar and "ok" or "nil") .. extra)
         self:UnregisterEvent("PLAYER_LOGIN")
     end
 end)
 
-local function Print(msg)
-    DEFAULT_CHAT_FRAME:AddMessage("|cff0cd29f[EUI Tooltip Health]|r " .. msg)
-end
-
 local function PrintStatus()
-    Print("血量显示: |cff00ff00" .. (db.enabled and "开" or "关") .. "|r | " ..
+    Print("v" .. VERSION .. " | 血量显示: |cff00ff00" .. (db.enabled and "开" or "关") .. "|r | " ..
         "百分比: |cff00ff00" .. (db.showPercent and "开" or "关") .. "|r | " ..
         "标签: |cff00ff00" .. (db.showLabel and "开" or "关") .. "|r | " ..
         "实时刷新: |cff00ff00" .. (db.liveUpdate and "开" or "关") .. "|r | " ..
-        "血量着色: |cff00ff00" .. (db.colorByPct and "开" or "关") .. "|r | " ..
+        "血条位置: |cff00ff00" .. (db.barPosition == "bottom" and "底部" or "顶部") .. "|r | " ..
         "调试: |cff00ff00" .. (db.debug and "开" or "关") .. "|r")
-    Print("用法: /euhp [on|off] / percent [on|off] / label [on|off] / live [on|off] / color [on|off] / debug [on|off] / reset / help")
+    Print("用法: /euhp [on|off] / percent [on|off] / label [on|off] / live [on|off] / bar top|bottom / debug [on|off] / reset / help")
 end
 
 local function ParseBool(s)
@@ -391,6 +488,15 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
     local cmd, arg = msg:match("^(%S*)%s*(.-)$")
     if cmd == "" or cmd == "help" then
         PrintStatus()
+        return
+    end
+    if cmd == "install" then
+        Install()
+        local extra = ""
+        if installStatus ~= "ok" and installErr then
+            extra = " | err: " .. installErr
+        end
+        Print("Install 状态: " .. installStatus .. " | 血条: " .. (bar and "ok" or "nil") .. extra)
         return
     end
     if cmd == "on" or cmd == "off" then
@@ -422,12 +528,16 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
         Print("实时刷新: " .. (db.liveUpdate and "开" or "关"))
         return
     end
-    if cmd == "color" then
-        local v = ParseBool(arg)
-        if v == nil then Print("用法: /euhp color on|off") return end
-        db.colorByPct = v
-        Print("血量着色: " .. (db.colorByPct and "开" or "关"))
-        RefreshShown()
+    if cmd == "bar" then
+        local p = Trim(arg):lower()
+        if p == "top" or p == "bottom" then
+            db.barPosition = p
+            ApplyBarAnchor()
+            Print("血条位置: " .. (db.barPosition == "bottom" and "底部" or "顶部"))
+            RefreshShown()
+            return
+        end
+        Print("用法: /euhp bar top|bottom")
         return
     end
     if cmd == "debug" then
@@ -442,9 +552,10 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
         db.showLabel = false
         db.showPercent = false
         db.liveUpdate = true
-        db.colorByPct = true
+        db.barPosition = "top"
         db.debug = false
         Print("已恢复默认设置")
+        ApplyBarAnchor()
         RefreshShown()
         return
     end
