@@ -23,8 +23,11 @@ end
 EllesmereUITooltipHealthDB = EllesmereUITooltipHealthDB or {}
 local db = EllesmereUITooltipHealthDB
 
+local function EllesmereUILoaded()
+    return (C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("EllesmereUI")) or false
+end
+
 local function EnsureDefaults()
-    if db.enabled == nil then db.enabled = true end
     if db.showLabel == nil then db.showLabel = false end
     if db.showPercent == nil then db.showPercent = false end
     if db.liveUpdate == nil then db.liveUpdate = true end
@@ -444,6 +447,12 @@ f:SetScript("OnEvent", function(self, event, addon)
         return
     end
     if event == "PLAYER_LOGIN" then
+        if db.enabled == nil then
+            db.enabled = EllesmereUILoaded()
+            if not db.enabled then
+                Print("EllesmereUI 未载入，血条默认关闭（/euhp on 可开启）")
+            end
+        end
         Install()
         local extra = ""
         if installStatus ~= "ok" and installErr then
@@ -548,7 +557,7 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
         return
     end
     if cmd == "reset" then
-        db.enabled = true
+        db.enabled = EllesmereUILoaded()
         db.showLabel = false
         db.showPercent = false
         db.liveUpdate = true
