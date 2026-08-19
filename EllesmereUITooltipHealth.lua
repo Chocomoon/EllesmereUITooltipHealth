@@ -1,5 +1,5 @@
 local ADDON = "EllesmereUITooltipHealth"
-local VERSION = "1.0.0"
+local VERSION = "1.0.1"
 
 local state = setmetatable({}, { __mode = "k" })
 local issecret = _G.issecretvalue
@@ -159,20 +159,32 @@ end
 local function CreateBar()
     if not GameTooltip then return end
     if bar then return end
-    bar = CreateFrame("StatusBar", nil, GameTooltip, "BackdropTemplate")
+    bar = CreateFrame("StatusBar", nil, GameTooltip)
     bar:SetHeight(12)
     bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
     bar:SetStatusBarColor(0.6, 0.6, 0.6)
     bar:SetMinMaxValues(0, 1)
     bar:SetValue(0)
-    bar:SetBackdrop({
-        bgFile = "Interface\\Buttons\\WHITE8X8",
-        edgeFile = "Interface\\Buttons\\WHITE8X8",
-        edgeSize = 1,
-        insets = { left = 0, right = 0, top = 0, bottom = 0 },
-    })
-    bar:SetBackdropColor(0, 0, 0, 0.6)
-    bar:SetBackdropBorderColor(0, 0, 0, 0.8)
+    bar:SetScript("OnSizeChanged", nil)
+    local bg = bar:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(bar)
+    bg:SetColorTexture(0, 0, 0, 0.6)
+    local function Edge(p1, p1Anchor, p2, p2Anchor, vertical, size)
+        local t = bar:CreateTexture(nil, "BORDER")
+        t:SetColorTexture(0, 0, 0, 0.8)
+        if vertical then
+            t:SetWidth(size)
+        else
+            t:SetHeight(size)
+        end
+        t:SetPoint(p1, bar, p1Anchor)
+        t:SetPoint(p2, bar, p2Anchor)
+        return t
+    end
+    Edge("TOPLEFT", "TOPLEFT", "TOPRIGHT", "TOPRIGHT", false, 1)
+    Edge("BOTTOMLEFT", "BOTTOMLEFT", "BOTTOMRIGHT", "BOTTOMRIGHT", false, 1)
+    Edge("TOPLEFT", "TOPLEFT", "BOTTOMLEFT", "BOTTOMLEFT", true, 1)
+    Edge("TOPRIGHT", "TOPRIGHT", "BOTTOMRIGHT", "BOTTOMRIGHT", true, 1)
     barText = bar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     barText:SetPoint("CENTER", bar, "CENTER", 0, 0)
     barText:SetJustifyH("CENTER")

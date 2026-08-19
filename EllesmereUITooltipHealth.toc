@@ -2,7 +2,7 @@
 ## Title: |cff0cd29fEllesmereUI|r Tooltip Health
 ## Notes: Adds a current/max health line to the unit tooltip. Works standalone; enabled by default only when the EllesmereUI tooltip is active, otherwise use /euhp on.
 ## Author: Choco
-## Version: 1.0.0
+## Version: 1.0.1
 ## SavedVariables: EllesmereUITooltipHealthDB
 
 EllesmereUITooltipHealth.lua
