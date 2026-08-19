@@ -19,22 +19,27 @@ local function CanAccess(v)
     end
     return true
 end
-
 EllesmereUITooltipHealthDB = EllesmereUITooltipHealthDB or {}
-local db = EllesmereUITooltipHealthDB
+
+local db
 
 local function EllesmereUILoaded()
     return (C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("EllesmereUI")) or false
 end
 
 local function EnsureDefaults()
-    if db.showLabel == nil then db.showLabel = false end
     if db.showPercent == nil then db.showPercent = false end
-    if db.liveUpdate == nil then db.liveUpdate = true end
     if db.barPosition == nil then db.barPosition = "top" end
     if db.debug == nil then db.debug = false end
+    db.colorByPct = nil
+    db.showLabel = nil
+    db.liveUpdate = nil
 end
-EnsureDefaults()
+
+local function BindDB()
+    db = EllesmereUITooltipHealthDB
+    EnsureDefaults()
+end
 
 local function Log(msg)
     if not db.debug then return end
@@ -44,10 +49,6 @@ end
 local function Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff0cd29f[EUI Tooltip Health]|r " .. tostring(msg))
 end
-
-local LABEL = "Health:"
-local loc = GetLocale and GetLocale()
-if loc == "zhCN" or loc == "zhTW" then LABEL = "生命值:" end
 
 local function fmt(n)
     if isSecret(n) then
@@ -88,6 +89,7 @@ local bar
 local barText
 local installStatus = "pending"
 local installErr
+local postcallInstalled = false
 
 local function ApplyBarFont(ft)
     if not ft or not (EllesmereUI and EllesmereUI.GetFontPath) then return end
@@ -144,6 +146,7 @@ end
 
 local function CreateBar()
     if not GameTooltip then return end
+    if bar then return end
     bar = CreateFrame("StatusBar", nil, GameTooltip, "BackdropTemplate")
     bar:SetHeight(12)
     bar:SetStatusBarTexture("Interface\\Buttons\\WHITE8X8")
@@ -168,17 +171,24 @@ local function CreateBar()
     Log("bar created (" .. (db.barPosition == "bottom" and "bottom" or "top") .. ")")
 end
 
+local function HideBar()
+    if bar then bar:Hide() end
+end
+
 local function AddOrUpdate(tt, guid, token)
     if not db.enabled then
-        if bar then bar:Hide() end
+        HideBar()
+        if GameTooltipStatusBar then GameTooltipStatusBar:Show() end
         return "disabled"
     end
     if not token then
         Log("AddOrUpdate: no token")
+        HideBar()
         return "no-token"
     end
     if not UnitExists(token) then
         Log("AddOrUpdate: unit not exists: " .. tostring(token))
+        HideBar()
         return "no-unit"
     end
     if not bar then
@@ -187,14 +197,21 @@ local function AddOrUpdate(tt, guid, token)
     end
     local hp, max = UnitHealth(token), UnitHealthMax(token)
     local hpSec, maxSec = isSecret(hp), isSecret(max)
+    Log(string.format("AddOrUpdate: hp secret=%s max secret=%s", tostring(hpSec), tostring(maxSec)))
 
     local pctNum, pctStr
+    local barMax, barValue
+    local fillSource
     if hpSec or maxSec then
         Log("AddOrUpdate: hp/max secret -> bar render path")
-        if _G.UnitHealthPercent then
-            local okp, p = pcall(UnitHealthPercent, token, true)
+        local pctSecret
+        if _G.CurveConstants and _G.CurveConstants.ScaleTo100 and _G.UnitHealthPercent then
+            local okp, p = pcall(UnitHealthPercent, token, true, _G.CurveConstants.ScaleTo100)
+            Log(string.format("curve result: ok=%s type=%s secret=%s",
+                tostring(okp), tostring(type(p)), tostring(p ~= nil and isSecret(p))))
             if okp and p ~= nil then
                 if isSecret(p) then
+                    pctSecret = p
                     local oks, ps = pcall(string.format, "%d", p)
                     if oks and type(ps) == "string" then
                         pctStr = ps
@@ -203,6 +220,27 @@ local function AddOrUpdate(tt, guid, token)
                     pctNum = math.floor(p + 0.5)
                     pctStr = tostring(pctNum)
                 end
+            end
+        end
+        local done = false
+        if guid and _G.UnitPercentHealthFromGUID then
+            local okf, f = pcall(UnitPercentHealthFromGUID, guid)
+            if okf and f ~= nil then
+                barMax, barValue = 1, f
+                fillSource = "guidPct"
+                done = true
+            end
+        end
+        if not done then
+            if pctNum then
+                barMax, barValue = 100, pctNum
+                fillSource = "pctNum"
+            elseif pctSecret then
+                barMax, barValue = 100, pctSecret
+                fillSource = "pctSecret"
+            else
+                barMax, barValue = 1, 0
+                fillSource = "none"
             end
         end
     else
@@ -215,15 +253,20 @@ local function AddOrUpdate(tt, guid, token)
         if hp > max then hp = max end
         pctNum = math.floor((hp / max) * 100 + 0.5)
         pctStr = tostring(pctNum)
+        barMax, barValue = max, hp
+        fillSource = "raw"
     end
+    Log(string.format("AddOrUpdate: fill source=%s barMax=%s barValue=%s", fillSource or "?", tostring(barMax), tostring(barValue)))
 
     local hpStr, maxStr = fmt(hp), fmt(max)
 
-    pcall(bar.SetMinMaxValues, bar, 0, max)
-    pcall(bar.SetValue, bar, hp)
+    local okmm = pcall(bar.SetMinMaxValues, bar, 0, barMax)
+    local okval = pcall(bar.SetValue, bar, barValue)
+    Log(string.format("AddOrUpdate: setminmax ok=%s setvalue ok=%s", tostring(okmm), tostring(okval)))
 
     local r, g, b = BarColor(token)
     pcall(bar.SetStatusBarColor, bar, r, g, b)
+    Log(string.format("AddOrUpdate: color r=%s g=%s b=%s", tostring(r), tostring(g), tostring(b)))
 
     if not barText then
         Log("AddOrUpdate: barText nil")
@@ -232,17 +275,9 @@ local function AddOrUpdate(tt, guid, token)
 
     local okf, ferr = pcall(function()
         if db.showPercent then
-            if db.showLabel then
-                barText:SetFormattedText("%s %s / %s (%s%%)", LABEL, hpStr, maxStr, pctStr or "??")
-            else
-                barText:SetFormattedText("%s / %s (%s%%)", hpStr, maxStr, pctStr or "??")
-            end
+            barText:SetFormattedText("%s / %s (%s%%)", hpStr, maxStr, pctStr or "??")
         else
-            if db.showLabel then
-                barText:SetFormattedText("%s %s / %s", LABEL, hpStr, maxStr)
-            else
-                barText:SetFormattedText("%s / %s", hpStr, maxStr)
-            end
+            barText:SetFormattedText("%s / %s", hpStr, maxStr)
         end
         bar:Show()
     end)
@@ -360,44 +395,62 @@ local function Install()
     installStatus = "pending"
     if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall
         and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Unit then
-        local ok, err = pcall(function()
-            TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, function(tt, data)
-                Handler(tt, data, "postcall")
+        if not postcallInstalled then
+            local ok, err = pcall(function()
+                TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, function(tt, data)
+                    Handler(tt, data, "postcall")
+                end)
             end)
-        end)
-        if ok then
-            installStatus = "postcall-ok"
-            Log("installed TooltipDataProcessor post-call")
+            if ok then
+                postcallInstalled = true
+                installStatus = "postcall-ok"
+                Log("installed TooltipDataProcessor post-call")
+            else
+                installStatus = "postcall-err"
+                Log("postcall register ERROR: " .. tostring(err))
+            end
         else
-            installStatus = "postcall-err"
-            Log("postcall register ERROR: " .. tostring(err))
+            installStatus = "postcall-ok"
         end
     else
         installStatus = "postcall-unavailable"
         Log("TooltipDataProcessor unavailable")
     end
 
-    local bok, berr = pcall(function()
-        CreateBar()
-        if GameTooltipStatusBar then
-            GameTooltipStatusBar:Hide()
+    if not bar then
+        local bok, berr = pcall(function()
+            CreateBar()
+            if GameTooltipStatusBar then
+                GameTooltipStatusBar:Hide()
+            end
+        end)
+        if not bok then
+            installStatus = "bar-err"
+            installErr = tostring(berr)
+            Log("CreateBar ERROR: " .. installErr)
+        elseif installStatus == "postcall-ok" then
+            installStatus = "ok"
         end
-    end)
-    if not bok then
-        installStatus = "bar-err"
-        installErr = tostring(berr)
-        Log("CreateBar ERROR: " .. installErr)
     elseif installStatus == "postcall-ok" then
         installStatus = "ok"
     end
     Log("Install status: " .. installStatus)
 end
 
+local function ReportInstall(prefix)
+    local extra = ""
+    if installStatus ~= "ok" and installErr then
+        extra = " | err: " .. installErr
+    end
+    Print((prefix or "") .. "Install 状态: " .. installStatus ..
+        " | 血条: " .. (bar and "ok" or "nil") .. extra)
+end
+
 local ev = CreateFrame("Frame")
 ev:RegisterEvent("UNIT_HEALTH")
 ev:RegisterEvent("UNIT_MAXHEALTH")
 ev:SetScript("OnEvent", function(self, event, unitToken)
-    if not db.liveUpdate or not db.enabled then return end
+    if not db.enabled then return end
     if not GameTooltip or not GameTooltip:IsShown() then return end
     if not unitToken or isSecret(unitToken) then return end
     local row = state[GameTooltip]
@@ -414,19 +467,19 @@ end)
 if GameTooltip and GameTooltip.HookScript then
     GameTooltip:HookScript("OnHide", function(self)
         state[self] = nil
-        if bar then bar:Hide() end
+        HideBar()
         if GameTooltipStatusBar then GameTooltipStatusBar:Hide() end
     end)
     GameTooltip:HookScript("OnTooltipCleared", function(self)
         state[self] = nil
-        if bar then bar:Hide() end
+        HideBar()
         if GameTooltipStatusBar then GameTooltipStatusBar:Hide() end
     end)
 end
 
 if GameTooltip and GameTooltip.SetUnit and _G.hooksecurefunc then
     _G.hooksecurefunc(GameTooltip, "SetUnit", function(tt, unit)
-        if not db.enabled or not db.liveUpdate then return end
+        if not db.enabled then return end
         if not unit or isSecret(unit) or not UnitExists(unit) then return end
         local guid = UnitGUID(unit)
         if guid and isSecret(guid) then guid = nil end
@@ -441,7 +494,7 @@ f:RegisterEvent("PLAYER_LOGIN")
 f:SetScript("OnEvent", function(self, event, addon)
     if event == "ADDON_LOADED" then
         if addon == ADDON then
-            EnsureDefaults()
+            BindDB()
             self:UnregisterEvent("ADDON_LOADED")
         end
         return
@@ -454,12 +507,7 @@ f:SetScript("OnEvent", function(self, event, addon)
             end
         end
         Install()
-        local extra = ""
-        if installStatus ~= "ok" and installErr then
-            extra = " | err: " .. installErr
-        end
-        Print("v" .. VERSION .. " 已加载 | Install: " .. installStatus ..
-            " | 血条: " .. (bar and "ok" or "nil") .. extra)
+        ReportInstall("v" .. VERSION .. " 已加载 | ")
         self:UnregisterEvent("PLAYER_LOGIN")
     end
 end)
@@ -467,11 +515,9 @@ end)
 local function PrintStatus()
     Print("v" .. VERSION .. " | 血量显示: |cff00ff00" .. (db.enabled and "开" or "关") .. "|r | " ..
         "百分比: |cff00ff00" .. (db.showPercent and "开" or "关") .. "|r | " ..
-        "标签: |cff00ff00" .. (db.showLabel and "开" or "关") .. "|r | " ..
-        "实时刷新: |cff00ff00" .. (db.liveUpdate and "开" or "关") .. "|r | " ..
         "血条位置: |cff00ff00" .. (db.barPosition == "bottom" and "底部" or "顶部") .. "|r | " ..
         "调试: |cff00ff00" .. (db.debug and "开" or "关") .. "|r")
-    Print("用法: /euhp [on|off] / percent [on|off] / label [on|off] / live [on|off] / bar top|bottom / debug [on|off] / reset / help")
+    Print("用法: /euhp [on|off] / percent [on|off] / bar top|bottom / debug [on|off] / reset / help")
 end
 
 local function ParseBool(s)
@@ -499,15 +545,6 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
         PrintStatus()
         return
     end
-    if cmd == "install" then
-        Install()
-        local extra = ""
-        if installStatus ~= "ok" and installErr then
-            extra = " | err: " .. installErr
-        end
-        Print("Install 状态: " .. installStatus .. " | 血条: " .. (bar and "ok" or "nil") .. extra)
-        return
-    end
     if cmd == "on" or cmd == "off" then
         db.enabled = (cmd == "on")
         Print("血量显示: " .. (db.enabled and "开" or "关"))
@@ -520,21 +557,6 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
         db.showPercent = v
         Print("百分比: " .. (db.showPercent and "开" or "关"))
         RefreshShown()
-        return
-    end
-    if cmd == "label" then
-        local v = ParseBool(arg)
-        if v == nil then Print("用法: /euhp label on|off") return end
-        db.showLabel = v
-        Print("标签: " .. (db.showLabel and "开" or "关"))
-        RefreshShown()
-        return
-    end
-    if cmd == "live" then
-        local v = ParseBool(arg)
-        if v == nil then Print("用法: /euhp live on|off") return end
-        db.liveUpdate = v
-        Print("实时刷新: " .. (db.liveUpdate and "开" or "关"))
         return
     end
     if cmd == "bar" then
@@ -558,9 +580,7 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
     end
     if cmd == "reset" then
         db.enabled = EllesmereUILoaded()
-        db.showLabel = false
         db.showPercent = false
-        db.liveUpdate = true
         db.barPosition = "top"
         db.debug = false
         Print("已恢复默认设置")
