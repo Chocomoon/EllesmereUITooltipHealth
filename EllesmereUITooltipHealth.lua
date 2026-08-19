@@ -27,6 +27,15 @@ local function EllesmereUILoaded()
     return (C_AddOns and C_AddOns.IsAddOnLoaded and C_AddOns.IsAddOnLoaded("EllesmereUI")) or false
 end
 
+local function EllesmereTooltipEnabled()
+    if not EllesmereUILoaded() then return false end
+    return not EllesmereUIDB or EllesmereUIDB.customTooltips ~= false
+end
+
+local function IsActive()
+    return db.enabled and (db.manual or EllesmereTooltipEnabled())
+end
+
 local function EnsureDefaults()
     if db.showPercent == nil then db.showPercent = false end
     if db.barPosition == nil then db.barPosition = "top" end
@@ -43,6 +52,7 @@ end
 
 local function Log(msg)
     if not db.debug then return end
+    if type(msg) == "function" then msg = msg() end
     DEFAULT_CHAT_FRAME:AddMessage("|cff0cd29f[EUI TH]|r " .. tostring(msg))
 end
 
@@ -60,8 +70,10 @@ local function fmt(n)
                     local okb, b = pcall(_G.BreakUpLargeNumbers, num)
                     if okb and type(b) == "string" then return b end
                 end
-                Log(string.format("fmt secret: abbrev ok=%s type=%s secret=%s tonumber=%s",
-                    tostring(ok), type(s), tostring(isSecret(s)), tostring(type(num))))
+                Log(function()
+                    return string.format("fmt secret: abbrev ok=%s type=%s secret=%s tonumber=%s",
+                        tostring(ok), type(s), tostring(isSecret(s)), tostring(type(num)))
+                end)
                 return s
             end
         end
@@ -176,7 +188,7 @@ local function HideBar()
 end
 
 local function AddOrUpdate(tt, guid, token)
-    if not db.enabled then
+    if not IsActive() then
         HideBar()
         if GameTooltipStatusBar then GameTooltipStatusBar:Show() end
         return "disabled"
@@ -197,7 +209,9 @@ local function AddOrUpdate(tt, guid, token)
     end
     local hp, max = UnitHealth(token), UnitHealthMax(token)
     local hpSec, maxSec = isSecret(hp), isSecret(max)
-    Log(string.format("AddOrUpdate: hp secret=%s max secret=%s", tostring(hpSec), tostring(maxSec)))
+    Log(function()
+        return string.format("AddOrUpdate: hp secret=%s max secret=%s", tostring(hpSec), tostring(maxSec))
+    end)
 
     local pctNum, pctStr
     local barMax, barValue
@@ -207,8 +221,10 @@ local function AddOrUpdate(tt, guid, token)
         local pctSecret
         if _G.CurveConstants and _G.CurveConstants.ScaleTo100 and _G.UnitHealthPercent then
             local okp, p = pcall(UnitHealthPercent, token, true, _G.CurveConstants.ScaleTo100)
-            Log(string.format("curve result: ok=%s type=%s secret=%s",
-                tostring(okp), tostring(type(p)), tostring(p ~= nil and isSecret(p))))
+            Log(function()
+                return string.format("curve result: ok=%s type=%s secret=%s",
+                    tostring(okp), tostring(type(p)), tostring(p ~= nil and isSecret(p)))
+            end)
             if okp and p ~= nil then
                 if isSecret(p) then
                     pctSecret = p
@@ -256,17 +272,23 @@ local function AddOrUpdate(tt, guid, token)
         barMax, barValue = max, hp
         fillSource = "raw"
     end
-    Log(string.format("AddOrUpdate: fill source=%s barMax=%s barValue=%s", fillSource or "?", tostring(barMax), tostring(barValue)))
+    Log(function()
+        return string.format("AddOrUpdate: fill source=%s barMax=%s barValue=%s", fillSource or "?", tostring(barMax), tostring(barValue))
+    end)
 
     local hpStr, maxStr = fmt(hp), fmt(max)
 
     local okmm = pcall(bar.SetMinMaxValues, bar, 0, barMax)
     local okval = pcall(bar.SetValue, bar, barValue)
-    Log(string.format("AddOrUpdate: setminmax ok=%s setvalue ok=%s", tostring(okmm), tostring(okval)))
+    Log(function()
+        return string.format("AddOrUpdate: setminmax ok=%s setvalue ok=%s", tostring(okmm), tostring(okval))
+    end)
 
     local r, g, b = BarColor(token)
     pcall(bar.SetStatusBarColor, bar, r, g, b)
-    Log(string.format("AddOrUpdate: color r=%s g=%s b=%s", tostring(r), tostring(g), tostring(b)))
+    Log(function()
+        return string.format("AddOrUpdate: color r=%s g=%s b=%s", tostring(r), tostring(g), tostring(b))
+    end)
 
     if not barText then
         Log("AddOrUpdate: barText nil")
@@ -370,7 +392,7 @@ end
 
 local function Handler(tt, data, source)
     local ok, err = pcall(function()
-        if not db.enabled then return end
+        if not IsActive() then return end
         if tt ~= GameTooltip then
             Log("skip: not GameTooltip (" .. tostring(tt and tt.GetName and tt:GetName() or "?") .. ")")
             return
@@ -380,8 +402,10 @@ local function Handler(tt, data, source)
             return
         end
         local guid, token = ResolveUnit(tt, data)
-        Log(string.format("resolve [%s] type=%s guid=%s token=%s",
-            source or "?", tostring(data and data.type), tostring(guid), tostring(token)))
+        Log(function()
+            return string.format("resolve [%s] type=%s guid=%s token=%s",
+                source or "?", tostring(data and data.type), tostring(guid), tostring(token))
+        end)
         if not token then return end
         local status = AddOrUpdate(tt, guid, token)
         Log("AddOrUpdate: " .. tostring(status))
@@ -395,42 +419,34 @@ local function Install()
     installStatus = "pending"
     if TooltipDataProcessor and TooltipDataProcessor.AddTooltipPostCall
         and Enum and Enum.TooltipDataType and Enum.TooltipDataType.Unit then
-        if not postcallInstalled then
-            local ok, err = pcall(function()
-                TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, function(tt, data)
-                    Handler(tt, data, "postcall")
-                end)
+        local ok, err = pcall(function()
+            TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Unit, function(tt, data)
+                Handler(tt, data, "postcall")
             end)
-            if ok then
-                postcallInstalled = true
-                installStatus = "postcall-ok"
-                Log("installed TooltipDataProcessor post-call")
-            else
-                installStatus = "postcall-err"
-                Log("postcall register ERROR: " .. tostring(err))
-            end
-        else
+        end)
+        if ok then
+            postcallInstalled = true
             installStatus = "postcall-ok"
+            Log("installed TooltipDataProcessor post-call")
+        else
+            installStatus = "postcall-err"
+            Log("postcall register ERROR: " .. tostring(err))
         end
     else
         installStatus = "postcall-unavailable"
         Log("TooltipDataProcessor unavailable")
     end
 
-    if not bar then
-        local bok, berr = pcall(function()
-            CreateBar()
-            if GameTooltipStatusBar then
-                GameTooltipStatusBar:Hide()
-            end
-        end)
-        if not bok then
-            installStatus = "bar-err"
-            installErr = tostring(berr)
-            Log("CreateBar ERROR: " .. installErr)
-        elseif installStatus == "postcall-ok" then
-            installStatus = "ok"
+    local bok, berr = pcall(function()
+        CreateBar()
+        if GameTooltipStatusBar then
+            GameTooltipStatusBar:Hide()
         end
+    end)
+    if not bok then
+        installStatus = "bar-err"
+        installErr = tostring(berr)
+        Log("CreateBar ERROR: " .. installErr)
     elseif installStatus == "postcall-ok" then
         installStatus = "ok"
     end
@@ -438,6 +454,7 @@ local function Install()
 end
 
 local function ReportInstall(prefix)
+    if not db.debug then return end
     local extra = ""
     if installStatus ~= "ok" and installErr then
         extra = " | err: " .. installErr
@@ -450,7 +467,7 @@ local ev = CreateFrame("Frame")
 ev:RegisterEvent("UNIT_HEALTH")
 ev:RegisterEvent("UNIT_MAXHEALTH")
 ev:SetScript("OnEvent", function(self, event, unitToken)
-    if not db.enabled then return end
+    if not IsActive() then return end
     if not GameTooltip or not GameTooltip:IsShown() then return end
     if not unitToken or isSecret(unitToken) then return end
     local row = state[GameTooltip]
@@ -464,22 +481,21 @@ ev:SetScript("OnEvent", function(self, event, unitToken)
     pcall(AddOrUpdate, GameTooltip, row.guid, row.token)
 end)
 
+local function TooltipHidden(self)
+    state[self] = nil
+    HideBar()
+    if GameTooltipStatusBar then GameTooltipStatusBar:Hide() end
+end
+
 if GameTooltip and GameTooltip.HookScript then
-    GameTooltip:HookScript("OnHide", function(self)
-        state[self] = nil
-        HideBar()
-        if GameTooltipStatusBar then GameTooltipStatusBar:Hide() end
-    end)
-    GameTooltip:HookScript("OnTooltipCleared", function(self)
-        state[self] = nil
-        HideBar()
-        if GameTooltipStatusBar then GameTooltipStatusBar:Hide() end
-    end)
+    GameTooltip:HookScript("OnHide", TooltipHidden)
+    GameTooltip:HookScript("OnTooltipCleared", TooltipHidden)
 end
 
 if GameTooltip and GameTooltip.SetUnit and _G.hooksecurefunc then
     _G.hooksecurefunc(GameTooltip, "SetUnit", function(tt, unit)
-        if not db.enabled then return end
+        if postcallInstalled then return end
+        if not IsActive() then return end
         if not unit or isSecret(unit) or not UnitExists(unit) then return end
         local guid = UnitGUID(unit)
         if guid and isSecret(guid) then guid = nil end
@@ -500,10 +516,17 @@ f:SetScript("OnEvent", function(self, event, addon)
         return
     end
     if event == "PLAYER_LOGIN" then
-        if db.enabled == nil then
-            db.enabled = EllesmereUILoaded()
-            if not db.enabled then
-                Print("EllesmereUI 未载入，血条默认关闭（/euhp on 可开启）")
+        if db.manual == nil then
+            local prev = db.enabled
+            db.enabled = EllesmereTooltipEnabled()
+            if db.enabled ~= prev then
+                if not db.enabled then
+                    if not EllesmereUILoaded() then
+                        Print("EllesmereUI 未载入，血条默认关闭（/euhp on 可开启）")
+                    else
+                        Print("EllesmereUI tooltip 未启用，血条默认关闭（/euhp on 可开启）")
+                    end
+                end
             end
         end
         Install()
@@ -547,6 +570,7 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
     end
     if cmd == "on" or cmd == "off" then
         db.enabled = (cmd == "on")
+        db.manual = (cmd == "on")
         Print("血量显示: " .. (db.enabled and "开" or "关"))
         RefreshShown()
         return
@@ -579,7 +603,8 @@ SlashCmdList["ELLESMEREUITOOLTIPHEALTH"] = function(msg)
         return
     end
     if cmd == "reset" then
-        db.enabled = EllesmereUILoaded()
+        db.enabled = EllesmereTooltipEnabled()
+        db.manual = nil
         db.showPercent = false
         db.barPosition = "top"
         db.debug = false
